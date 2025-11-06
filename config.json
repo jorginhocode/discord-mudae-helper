@@ -1,0 +1,10 @@
+{
+  "allowed_users": [
+    userID1,
+    userID2,
+    userID3,
+    userID4,
+    userID5,
+    userID6
+  ]
+}
