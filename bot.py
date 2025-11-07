@@ -421,42 +421,40 @@ async def on_message(message):
             pass
         
         now = datetime.now(timezone.utc)
-        recent_commands_to_remove = []
-        for user_id, cmd_data in recent_commands.items():
-            if (now - cmd_data["timestamp"]).total_seconds() > 120:  # Increased to 120 seconds for vote
-                recent_commands_to_remove.append(user_id)
-        for user_id in recent_commands_to_remove:
-            del recent_commands[user_id]
+        # Create a list of items to process to avoid modifying dict during iteration
+        commands_to_process = list(recent_commands.items())
         
-        # $daily confirmation
-        if has_checkmark or "✅" in message.content or "white_check_mark" in content_lower or "daily reward" in content_lower or "recompensa diaria" in content_lower:
-            for user_id, cmd_data in recent_commands.items():
+        for user_id, cmd_data in commands_to_process:
+            # Clean up old entries first
+            if (now - cmd_data["timestamp"]).total_seconds() > 45:
+                if user_id in recent_commands:
+                    del recent_commands[user_id]
+                continue
+            
+            # $daily confirmation
+            if has_checkmark or "✅" in message.content or "white_check_mark" in content_lower or "daily reward" in content_lower or "recompensa diaria" in content_lower:
                 if cmd_data["command"] == "daily" and is_user_allowed(user_id):
                     update_cooldown(user_id, "daily", cmd_data.get("username"))
                     if user_id in recent_commands:
                         del recent_commands[user_id]
-                    break
-        
-        # $dk confirmation
-        elif "kakera" in content_lower and (
-            "añadidos a tu colección" in content_lower or
-            "añadido a tu colección" in content_lower or
-            "agregados a tu colección" in content_lower or
-            "added to your collection" in content_lower or
-            "added to your list" in content_lower or
-            "you received" in content_lower or
-            "kakera added" in content_lower
-        ):
-            for user_id, cmd_data in recent_commands.items():
+            
+            # $dk confirmation
+            elif "kakera" in content_lower and (
+                "añadidos a tu colección" in content_lower or
+                "añadido a tu colección" in content_lower or
+                "agregados a tu colección" in content_lower or
+                "added to your collection" in content_lower or
+                "added to your list" in content_lower or
+                "you received" in content_lower or
+                "kakera added" in content_lower
+            ):
                 if cmd_data["command"] == "dk" and is_user_allowed(user_id):
                     update_cooldown(user_id, "dk", cmd_data.get("username"))
                     if user_id in recent_commands:
                         del recent_commands[user_id]
-                    break
-        
-        # $dk cooldown message
-        elif "you can use $dk again" in content_lower or "puedes usar $dk de nuevo" in content_lower or "next $dk" in content_lower or "próximo $dk" in content_lower or "siguiente $dk" in content_lower:
-            for user_id, cmd_data in recent_commands.items():
+            
+            # $dk cooldown message
+            elif "you can use $dk again" in content_lower or "puedes usar $dk de nuevo" in content_lower or "next $dk" in content_lower or "próximo $dk" in content_lower or "siguiente $dk" in content_lower:
                 if cmd_data["command"] == "dk" and is_user_allowed(user_id):
                     user_name = cmd_data.get("username", str(user_id))
                     user_cooldowns = cooldowns.get(str(user_id), {})
@@ -467,11 +465,9 @@ async def on_message(message):
                         print(f"[COOLDOWN] {user_name} tried $dk but has {remaining_time_str} remaining")
                     if user_id in recent_commands:
                         del recent_commands[user_id]
-                    break
-        
-        # $daily cooldown message
-        elif "you can claim your daily reward again" in content_lower or "puedes reclamar tu recompensa diaria de nuevo" in content_lower or "next daily" in content_lower or "próximo daily" in content_lower or "siguiente daily" in content_lower:
-            for user_id, cmd_data in recent_commands.items():
+            
+            # $daily cooldown message
+            elif "you can claim your daily reward again" in content_lower or "puedes reclamar tu recompensa diaria de nuevo" in content_lower or "next daily" in content_lower or "próximo daily" in content_lower or "siguiente daily" in content_lower:
                 if cmd_data["command"] == "daily" and is_user_allowed(user_id):
                     user_name = cmd_data.get("username", str(user_id))
                     user_cooldowns = cooldowns.get(str(user_id), {})
@@ -482,43 +478,48 @@ async def on_message(message):
                         print(f"[COOLDOWN] {user_name} tried $daily but has {remaining_time_str} remaining")
                     if user_id in recent_commands:
                         del recent_commands[user_id]
-                    break
-        
-        # SPECIAL $VOTE HANDLING - This is the key fix
-        # When user executes $vote the second time, Mudae responds with cooldown info
-        if "puedes votar nuevamente en" in content_lower or "you can vote again in" in content_lower:
-            print("[VOTE] ✅ Vote confirmation detected - cooldown message")
             
-            # Find users who are in stage 2 (executed $vote twice)
-            for user_id, cmd_data in recent_commands.items():
+            # SPECIAL $VOTE HANDLING - Improved with cooldown check
+            if "puedes votar nuevamente en" in content_lower or "you can vote again in" in content_lower:
                 if cmd_data.get("command") == "vote" and cmd_data.get("vote_stage", 0) == 2 and is_user_allowed(user_id):
                     username = cmd_data.get("username", f"user_{user_id}")
+                    user_id_str = str(user_id)
+                    
+                    # Check if user already has an active vote cooldown
+                    if user_id_str in cooldowns and cooldowns[user_id_str].get("last_vote"):
+                        last_vote_str = cooldowns[user_id_str]["last_vote"]
+                        if last_vote_str:
+                            status, remaining = get_time_remaining(last_vote_str, 12)
+                            if status != "Available":
+                                remaining_time_str = format_timedelta(remaining)
+                                print(f"[COOLDOWN] {username} already has active vote cooldown - {remaining_time_str} remaining")
+                                if user_id in recent_commands:
+                                    del recent_commands[user_id]
+                                continue
+                    
+                    # Only update cooldown if no active cooldown exists
                     update_cooldown(user_id, "vote", username)
                     if user_id in recent_commands:
                         del recent_commands[user_id]
                     print(f"[VOTE] ✅ $vote registered successfully for {username}")
-                    break
-        
-        # $vote already used / on cooldown
-        elif "¡puedes votar en este momento!" in content_lower or "you can vote right now!" in content_lower:
-            print("[VOTE] ❌ Vote already used or not available")
             
-            # Find users who are in stage 2 (executed $vote twice)
-            for user_id, cmd_data in recent_commands.items():
+            # $vote already used / on cooldown (immediate response)
+            elif "¡puedes votar en este momento!" in content_lower or "you can vote right now!" in content_lower:
                 if cmd_data.get("command") == "vote" and cmd_data.get("vote_stage", 0) == 2 and is_user_allowed(user_id):
                     username = cmd_data.get("username", f"user_{user_id}")
-                    user_cooldowns = cooldowns.get(str(user_id), {})
-                    last_vote = user_cooldowns.get("last_vote")
-                    remaining_time_str = "unknown"
+                    user_id_str = str(user_id)
                     
-                    if last_vote:
-                        _, remaining_delta = get_time_remaining(last_vote, 12)
-                        remaining_time_str = format_timedelta(remaining_delta)
+                    # Check existing cooldown
+                    if user_id_str in cooldowns and cooldowns[user_id_str].get("last_vote"):
+                        last_vote_str = cooldowns[user_id_str]["last_vote"]
+                        if last_vote_str:
+                            status, remaining = get_time_remaining(last_vote_str, 12)
+                            if status != "Available":
+                                remaining_time_str = format_timedelta(remaining)
+                                print(f"[COOLDOWN] {username} tried $vote but has {remaining_time_str} remaining")
                     
-                    print(f"[COOLDOWN] {username} tried $vote but has {remaining_time_str} remaining")
                     if user_id in recent_commands:
                         del recent_commands[user_id]
-                    break
     
     # --- MANUAL COMMANDS (via DM or any channel) - ONLY ALLOWED USERS ---
     content = message.content.strip().lower()
