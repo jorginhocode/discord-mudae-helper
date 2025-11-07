@@ -16,7 +16,7 @@ COOLDOWN_FILE = "cooldowns.json"
 CONFIG_FILE = "config.json"
 
 # Track recent commands for timing accuracy
-recent_commands = {}  # {user_id: {"command": "daily/dk/vote", "timestamp": datetime, "username": str, "vote_stage": int}}
+recent_commands = {}  # {user_id: {"command": "daily/dk/vote", "timestamp": datetime, "username": str, "stage": int}}
 
 # Track who has received notifications this hour to prevent duplicates
 notified_users = {}  # {user_id: last_notification_hour}
@@ -366,12 +366,12 @@ async def on_message(message):
                     user_cmd = recent_commands[message.author.id]
                     
                     # If they're in stage 1 (first $vote executed), now they're in stage 2
-                    if user_cmd.get("command") == "vote" and user_cmd.get("vote_stage", 0) == 1:
+                    if user_cmd.get("command") == "vote" and user_cmd.get("stage", 0) == 1:
                         recent_commands[message.author.id] = {
                             "command": "vote",
                             "timestamp": current_time,
                             "username": username,
-                            "vote_stage": 2  # Second execution - waiting for Mudae's response
+                            "stage": 2  # Second execution - waiting for Mudae's response
                         }
                         print(f"[VOTE] {username} executed $vote second time - waiting for Mudae response")
                     else:
@@ -380,7 +380,7 @@ async def on_message(message):
                             "command": "vote",
                             "timestamp": current_time,
                             "username": username,
-                            "vote_stage": 1  # First execution
+                            "stage": 1  # First execution
                         }
                         print(f"[VOTE] {username} executed $vote first time")
                 else:
@@ -389,99 +389,138 @@ async def on_message(message):
                         "command": "vote",
                         "timestamp": current_time,
                         "username": username,
-                        "vote_stage": 1  # First execution
+                        "stage": 1  # First execution
                     }
                     print(f"[VOTE] {username} executed $vote first time")
             
-            # Regular commands ($daily and $dk)
+            # SPECIAL HANDLING FOR $DAILY - requires 2 executions
             elif content == "$daily":
-                recent_commands[message.author.id] = {
-                    "command": "daily", 
-                    "timestamp": datetime.now(timezone.utc), 
-                    "username": username
-                }
+                current_time = datetime.now(timezone.utc)
+                
+                # Check if this user already has a daily tracking
+                if message.author.id in recent_commands:
+                    user_cmd = recent_commands[message.author.id]
+                    
+                    # If they're in stage 1 (first $daily executed), now they're in stage 2
+                    if user_cmd.get("command") == "daily" and user_cmd.get("stage", 0) == 1:
+                        recent_commands[message.author.id] = {
+                            "command": "daily",
+                            "timestamp": current_time,
+                            "username": username,
+                            "stage": 2  # Second execution - waiting for Mudae's response
+                        }
+                        print(f"[DAILY] {username} executed $daily second time - waiting for Mudae response")
+                    else:
+                        # Reset to stage 1 if they executed $daily again after cooldown
+                        recent_commands[message.author.id] = {
+                            "command": "daily",
+                            "timestamp": current_time,
+                            "username": username,
+                            "stage": 1  # First execution
+                        }
+                        print(f"[DAILY] {username} executed $daily first time")
+                else:
+                    # First time executing $daily
+                    recent_commands[message.author.id] = {
+                        "command": "daily",
+                        "timestamp": current_time,
+                        "username": username,
+                        "stage": 1  # First execution
+                    }
+                    print(f"[DAILY] {username} executed $daily first time")
+            
+            # Regular command ($dk)
             elif content == "$dk":
                 recent_commands[message.author.id] = {
                     "command": "dk", 
                     "timestamp": datetime.now(timezone.utc), 
-                    "username": username
+                    "username": username,
+                    "stage": 1  # Stage 1 for consistency
                 }
+                print(f"[DK] {username} executed $dk - waiting for confirmation")
     
     # --- DETECT MUDAE'S RESPONSES (ONLY PROCESS FOR ALLOWED USERS) ---
     if message.author.id == 432610292342587392:  # Mudae bot ID
         content_lower = message.content.lower()
-        
-        has_checkmark = False
-        try:
-            for reaction in message.reactions:
-                if str(reaction.emoji) == "✅" and reaction.count > 0:
-                    has_checkmark = True
-                    break
-        except Exception:
-            pass
         
         now = datetime.now(timezone.utc)
         # Create a list of items to process to avoid modifying dict during iteration
         commands_to_process = list(recent_commands.items())
         
         for user_id, cmd_data in commands_to_process:
-            # Clean up old entries first
-            if (now - cmd_data["timestamp"]).total_seconds() > 45:
+            # Clean up old entries first (10 seconds for daily/vote, 45 for dk)
+            time_limit = 10 if cmd_data["command"] in ["daily", "vote"] else 45
+            if (now - cmd_data["timestamp"]).total_seconds() > time_limit:
                 if user_id in recent_commands:
                     del recent_commands[user_id]
                 continue
             
-            # $daily confirmation
-            if has_checkmark or "✅" in message.content or "white_check_mark" in content_lower or "daily reward" in content_lower or "recompensa diaria" in content_lower:
-                if cmd_data["command"] == "daily" and is_user_allowed(user_id):
-                    update_cooldown(user_id, "daily", cmd_data.get("username"))
-                    if user_id in recent_commands:
-                        del recent_commands[user_id]
-            
             # $dk confirmation
-            elif "kakera" in content_lower and (
-                "añadidos a tu colección" in content_lower or
-                "añadido a tu colección" in content_lower or
-                "agregados a tu colección" in content_lower or
-                "added to your collection" in content_lower or
-                "added to your list" in content_lower or
-                "you received" in content_lower or
-                "kakera added" in content_lower
+            if cmd_data["command"] == "dk" and is_user_allowed(user_id) and (
+                "kakera" in content_lower and (
+                    "añadidos a tu colección" in content_lower or
+                    "añadido a tu colección" in content_lower or
+                    "agregados a tu colección" in content_lower or
+                    "added to your collection" in content_lower or
+                    "added to your list" in content_lower or
+                    "you received" in content_lower or
+                    "kakera added" in content_lower
+                )
             ):
-                if cmd_data["command"] == "dk" and is_user_allowed(user_id):
-                    update_cooldown(user_id, "dk", cmd_data.get("username"))
-                    if user_id in recent_commands:
-                        del recent_commands[user_id]
+                username = cmd_data.get("username", f"user_{user_id}")
+                print(f"[DK] ✅ Kakera confirmation detected for {username}")
+                update_cooldown(user_id, "dk", username)
+                if user_id in recent_commands:
+                    del recent_commands[user_id]
             
             # $dk cooldown message
-            elif "you can use $dk again" in content_lower or "puedes usar $dk de nuevo" in content_lower or "next $dk" in content_lower or "próximo $dk" in content_lower or "siguiente $dk" in content_lower:
-                if cmd_data["command"] == "dk" and is_user_allowed(user_id):
-                    user_name = cmd_data.get("username", str(user_id))
-                    user_cooldowns = cooldowns.get(str(user_id), {})
-                    last_dk = user_cooldowns.get("last_dk")
-                    if last_dk:
-                        _, remaining_delta = get_time_remaining(last_dk, 20)
-                        remaining_time_str = format_timedelta(remaining_delta)
-                        print(f"[COOLDOWN] {user_name} tried $dk but has {remaining_time_str} remaining")
-                    if user_id in recent_commands:
-                        del recent_commands[user_id]
+            elif cmd_data["command"] == "dk" and is_user_allowed(user_id) and (
+                "you can use $dk again" in content_lower or 
+                "puedes usar $dk de nuevo" in content_lower or 
+                "next $dk" in content_lower or 
+                "próximo $dk" in content_lower or 
+                "siguiente $dk" in content_lower
+            ):
+                username = cmd_data.get("username", f"user_{user_id}")
+                user_cooldowns = cooldowns.get(str(user_id), {})
+                last_dk = user_cooldowns.get("last_dk")
+                if last_dk:
+                    _, remaining_delta = get_time_remaining(last_dk, 20)
+                    remaining_time_str = format_timedelta(remaining_delta)
+                    print(f"[COOLDOWN] {username} tried $dk but has {remaining_time_str} remaining")
+                if user_id in recent_commands:
+                    del recent_commands[user_id]
             
-            # $daily cooldown message
-            elif "you can claim your daily reward again" in content_lower or "puedes reclamar tu recompensa diaria de nuevo" in content_lower or "next daily" in content_lower or "próximo daily" in content_lower or "siguiente daily" in content_lower:
-                if cmd_data["command"] == "daily" and is_user_allowed(user_id):
-                    user_name = cmd_data.get("username", str(user_id))
+            # SPECIAL $DAILY HANDLING - Two-stage system
+            elif cmd_data["command"] == "daily" and cmd_data.get("stage", 0) == 2 and is_user_allowed(user_id):
+                # If Mudae responds with a cooldown message for daily
+                if ("you can claim your daily reward again" in content_lower or 
+                    "puedes reclamar tu recompensa diaria de nuevo" in content_lower or 
+                    "next daily" in content_lower or 
+                    "próximo daily" in content_lower or 
+                    "siguiente daily" in content_lower):
+                    
+                    username = cmd_data.get("username", f"user_{user_id}")
                     user_cooldowns = cooldowns.get(str(user_id), {})
                     last_daily = user_cooldowns.get("last_daily")
                     if last_daily:
                         _, remaining_delta = get_time_remaining(last_daily, 20)
                         remaining_time_str = format_timedelta(remaining_delta)
-                        print(f"[COOLDOWN] {user_name} tried $daily but has {remaining_time_str} remaining")
+                        print(f"[COOLDOWN] {username} tried $daily but has {remaining_time_str} remaining")
+                    if user_id in recent_commands:
+                        del recent_commands[user_id]
+                
+                # If there's no cooldown message (meaning daily was successful)
+                else:
+                    username = cmd_data.get("username", f"user_{user_id}")
+                    print(f"[DAILY] ✅ Daily confirmed by second execution for {username}")
+                    update_cooldown(user_id, "daily", username)
                     if user_id in recent_commands:
                         del recent_commands[user_id]
             
             # SPECIAL $VOTE HANDLING - Improved with cooldown check
-            if "puedes votar nuevamente en" in content_lower or "you can vote again in" in content_lower:
-                if cmd_data.get("command") == "vote" and cmd_data.get("vote_stage", 0) == 2 and is_user_allowed(user_id):
+            elif cmd_data["command"] == "vote" and cmd_data.get("stage", 0) == 2 and is_user_allowed(user_id):
+                if "puedes votar nuevamente en" in content_lower or "you can vote again in" in content_lower:
                     username = cmd_data.get("username", f"user_{user_id}")
                     user_id_str = str(user_id)
                     
@@ -502,10 +541,9 @@ async def on_message(message):
                     if user_id in recent_commands:
                         del recent_commands[user_id]
                     print(f"[VOTE] ✅ $vote registered successfully for {username}")
-            
-            # $vote already used / on cooldown (immediate response)
-            elif "¡puedes votar en este momento!" in content_lower or "you can vote right now!" in content_lower:
-                if cmd_data.get("command") == "vote" and cmd_data.get("vote_stage", 0) == 2 and is_user_allowed(user_id):
+                
+                # $vote already used / on cooldown (immediate response)
+                elif "¡puedes votar en este momento!" in content_lower or "you can vote right now!" in content_lower:
                     username = cmd_data.get("username", f"user_{user_id}")
                     user_id_str = str(user_id)
                     
